@@ -1,0 +1,76 @@
+# tmux-session-manager — minimal pane_plan example (YAML)
+#
+# Save as:
+#   <project-root>/.tmux-session.yaml
+#
+# Purpose:
+# - Minimal, copy/paste-friendly example focused ONLY on pane_plan mechanics
+# - Demonstrates deterministic split direction + size
+# - Uses the formal spec schema (pkg/spec)
+#
+# Safety model reminder:
+# - This file uses only safe actions (`type: run`) and `pane_plan` (no tmux passthrough).
+# - Shell actions (`type: shell`) and raw tmux actions (`type: tmux`) are opt-in and not used here.
+#
+# Variables:
+# - ${PROJECT_NAME}, ${PROJECT_PATH} are provided by tmux-session-manager.
+# - ${SHELL} and ${EDITOR} come from your environment.
+
+version: 1
+
+session:
+  name: "${PROJECT_NAME}"
+  root: "${PROJECT_PATH}"
+  attach: true
+
+env:
+  # Optional conveniences for the run commands below
+  EDITOR: "${EDITOR:-nvim}"
+  SHELL: "${SHELL:-bash}"
+
+windows:
+  - name: editor
+    root: "${PROJECT_PATH}"
+    layout: main-vertical
+
+    # pane_plan is interpreted left-to-right:
+    # - The first step must be a pane
+    # - split applies to the currently active pane
+    # - a pane following a split describes the newly created pane
+    # - last step must be a pane (cannot end with split)
+    pane_plan:
+      - pane:
+          name: nvim
+          focus: true
+          actions:
+            - type: run
+              run:
+                program: bash
+                args: ["-lc", "${EDITOR} ."]
+                enter: true
+
+      - split:
+          direction: h # h = side-by-side (tmux split-window -h)
+          size: "50%" # percent split (preferred)
+
+      - pane:
+          name: shell
+          actions:
+            - type: run
+              run:
+                program: bash
+                args: ["-lc", "${SHELL}"]
+                enter: true
+
+      - split:
+          direction: v # v = stacked (tmux split-window -v)
+          size: "30%" # percent split
+
+      - pane:
+          name: watch
+          actions:
+            - type: run
+              run:
+                program: bash
+                args: ["-lc", "ls -la"]
+                enter: true

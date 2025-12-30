@@ -1,0 +1,316 @@
+# tmux-session-manager — project-local session spec (YAML)
+#
+# Save as one of:
+#   - .tmux-session.yaml
+#   - .tmux-session.yml
+#   - .tmux-session.json
+#
+# Recommended location:
+#   <your-project-root>/.tmux-session.yaml
+#
+# Purpose:
+# - Define a reproducible tmux "development session" for THIS repo (tmuxinator-like),
+#   but expressed as a simple, versioned spec we control (no external deps).
+# - Keep defaults safe: actions are whitelisted; arbitrary shell is disabled by default.
+#
+# Deterministic splits:
+# - Use `pane_plan` to express split direction + size deterministically (tmuxifier-like),
+#   without requiring any raw tmux passthrough.
+#
+# Advanced / escape hatches:
+# - Use `actions:` with `type: tmux` only when you need behavior that isn't representable
+#   via `windows[].pane_plan` + `windows[].panes` + actions. This is opt-in and validated
+#   against an allowlist.
+#
+# Security model (recommended):
+# - actions-only is always allowed
+# - shell is allowed only if user explicitly enables it (env or tmux option)
+# - raw tmux passthrough is allowed only if explicitly enabled and validated
+#
+# Suggested toggles (implementation):
+# - TMUX_SESSION_MANAGER_ALLOW_SHELL=1
+# - TMUX_SESSION_MANAGER_ALLOW_TMUX_PASSTHROUGH=1
+# - @tmux_session_manager_allow_shell on
+# - @tmux_session_manager_allow_tmux_passthrough on
+#
+# ------------------------------------------------------------------------------
+
+version: 1
+
+# If omitted, session name defaults to sanitized project directory basename.
+session:
+  # name can be literal, or templated. Supported vars should include:
+  #   ${PROJECT_NAME}, ${PROJECT_PATH}
+  name: "${PROJECT_NAME}"
+
+  # root directory for session/windows/panes (defaults to project root)
+  root: "${PROJECT_PATH}"
+
+  # Whether the plugin should switch/attach after creating the session
+  # (the plugin may treat "attach" as "switch-client" when already inside tmux)
+  attach: true
+
+  # Optional tmux options to apply to the session (whitelisted keys recommended)
+  options:
+    - key: "base-index"
+      value: "1"
+    - key: "pane-base-index"
+      value: "1"
+
+# Optional environment variables to set when creating the session.
+# These are injected into pane commands as environment variables.
+env:
+  # Example: language/tooling preferences
+  EDITOR: "nvim"
+  # Example: preferred package manager for Node template-like commands
+  NODE_PKG_MANAGER: "pnpm"
+
+# Windows are created in order.
+windows:
+  # ----------------------------------------------------------------------------
+  # 1) Editor window (deterministic splits via pane_plan)
+  # ----------------------------------------------------------------------------
+  - name: "editor"
+    root: "${PROJECT_PATH}"
+    layout: "main-vertical" # tmux layout name (main-vertical, even-horizontal, tiled, etc.)
+
+    # pane_plan is preferred when you want deterministic split geometry.
+    # It is interpreted left-to-right:
+    # - split: splits from the currently active pane
+    # - pane: describes actions to run in the newly created (or initial) pane
+    pane_plan:
+      - pane:
+          name: "nvim"
+          focus: true
+          actions:
+            - run:
+                program: "bash"
+                args: ["-lc", "${EDITOR:-nvim} ."]
+                enter: true
+
+      - split:
+          direction: "h"
+          size: "50%"
+
+      - pane:
+          name: "shell"
+          actions:
+            - run:
+                program: "bash"
+                args: ["-lc", "${SHELL}"]
+                enter: true
+
+  # ----------------------------------------------------------------------------
+  # 2) Dev window (Node example) — deterministic split + commands
+  # ----------------------------------------------------------------------------
+  - name: "dev"
+    root: "${PROJECT_PATH}"
+    layout: "even-horizontal"
+
+    pane_plan:
+      - pane:
+          name: "server"
+          focus: true
+          actions:
+            # Prefer structured run actions. This compiles to tmux send-keys in the MVP.
+            - run:
+                program: "bash"
+                args:
+                  - "-lc"
+                  - |
+                    if [ -f pnpm-lock.yaml ] || [ "${NODE_PKG_MANAGER}" = "pnpm" ]; then
+                      pnpm dev
+                    elif [ -f yarn.lock ] || [ "${NODE_PKG_MANAGER}" = "yarn" ]; then
+                      yarn dev
+                    else
+                      npm run dev
+                    fi
+                enter: true
+
+      - split:
+          direction: "h"
+          size: "50%"
+
+      - pane:
+          name: "tests"
+          actions:
+            - run:
+                program: "bash"
+                args:
+                  - "-lc"
+                  - |
+                    if [ -f pnpm-lock.yaml ] || [ "${NODE_PKG_MANAGER}" = "pnpm" ]; then
+                      pnpm test
+                    elif [ -f yarn.lock ] || [ "${NODE_PKG_MANAGER}" = "yarn" ]; then
+                      yarn test
+                    else
+                      npm test
+                    fi
+                enter: true
+
+  # ----------------------------------------------------------------------------
+  # 3) Tools window (Go example)
+  # ----------------------------------------------------------------------------
+  - name: "tools"
+    root: "${PROJECT_PATH}"
+    layout: "even-vertical"
+    panes:
+      - name: "go-test"
+        actions:
+          - run:
+              argv: ["bash", "-lc", "go test ./..."]
+      - name: "git"
+        actions:
+          - run:
+              argv: ["bash", "-lc", "git status -sb; ${SHELL}"]
+
+# ------------------------------------------------------------------------------
+# Deterministic splits: pane_plan (recommended)
+# ------------------------------------------------------------------------------
+# Use `pane_plan` when you want deterministic split direction/size without enabling
+# any tmux passthrough:
+#
+# windows:
+#   - name: "editor"
+#     root: "${PROJECT_PATH}"
+#     pane_plan:
+#       - pane:
+#           name: "nvim"
+#           actions:
+#             - run: { program: "bash", args: ["-lc", "nvim ."], enter: true }
+#       - split: { direction: "h", size: "50%" }
+#       - pane:
+#           name: "shell"
+#           actions:
+#             - run: { program: "bash", args: ["-lc", "${SHELL}"], enter: true }
+#
+# Notes:
+# - direction: "h" (side-by-side) or "v" (stacked)
+# - size: "NN%" (preferred) or "NN" (absolute); exact handling depends on executor
+# - pane_plan is interpreted left-to-right; split always applies to the active pane
+#
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Unsafe escape hatches (disabled by default)
+# ------------------------------------------------------------------------------
+unsafe:
+  # Allow arbitrary shell snippets (string) in spec.
+  # When enabled, the plugin should still:
+  # - show a warning in the UI preview
+  # - support a dry-run that prints the exact commands
+  allow_shell: false
+
+  # Allow raw tmux subcommand passthrough.
+  # When enabled, the plugin should validate against an allowlist and still deny
+  # high-risk commands unless explicitly allowed.
+  allow_tmux_passthrough: false
+
+# Example of an unsafe shell action (should only run if allow_shell is enabled)
+# windows:
+#   - name: "danger"
+#     pane_plan:
+#       - pane:
+#           name: "demo"
+#           actions:
+#             - shell: { cmd: "echo hello; make dev" } # <-- unsafe (opt-in)
+
+# Example of tmux passthrough (should only run if allow_tmux_passthrough is enabled)
+# Prefer pane_plan for splits/layout. Use actions.tmux only for features that are not
+# representable declaratively.
+#
+# actions:
+#   - type: tmux
+#     target: { session: "${SESSION_NAME}" }
+#     tmux:
+#       name: "set-window-option"
+#       args: ["-g", "aggressive-resize", "on"]
+#
+#   - type: tmux
+#     target: { session: "${SESSION_NAME}" }
+#     tmux:
+#       name: "set-window-option"
+#       args: ["-g", "automatic-rename", "off"]
+
+# ==============================================================================
+# JSON EQUIVALENT (save as .tmux-session.json)
+# ==============================================================================
+#
+# {
+#   "version": 1,
+#   "session": {
+#     "name": "${PROJECT_NAME}",
+#     "root": "${PROJECT_PATH}",
+#     "attach": true,
+#     "options": [
+#       { "key": "base-index", "value": "1" },
+#       { "key": "pane-base-index", "value": "1" }
+#     ]
+#   },
+#   "env": {
+#     "EDITOR": "nvim",
+#     "NODE_PKG_MANAGER": "pnpm"
+#   },
+#   "windows": [
+#     {
+#       "name": "editor",
+#       "root": "${PROJECT_PATH}",
+#       "layout": "main-vertical",
+#       "panes": [
+#         {
+#           "name": "nvim",
+#           "focus": true,
+#           "actions": [
+#             { "run": { "argv": ["bash", "-lc", "${EDITOR:-nvim} ."] } }
+#           ]
+#         },
+#         {
+#           "name": "shell",
+#           "actions": [
+#             { "run": { "argv": ["bash", "-lc", "${SHELL}"] } }
+#           ]
+#         }
+#       ]
+#     },
+#     {
+#       "name": "dev",
+#       "root": "${PROJECT_PATH}",
+#       "layout": "even-horizontal",
+#       "panes": [
+#         {
+#           "name": "server",
+#           "focus": true,
+#           "actions": [
+#             {
+#               "run": {
+#                 "argv": [
+#                   "bash",
+#                   "-lc",
+#                   "if [ -f pnpm-lock.yaml ] || [ \"${NODE_PKG_MANAGER}\" = \"pnpm\" ]; then pnpm dev; elif [ -f yarn.lock ] || [ \"${NODE_PKG_MANAGER}\" = \"yarn\" ]; then yarn dev; else npm run dev; fi"
+#                 ]
+#               }
+#             }
+#           ]
+#         },
+#         {
+#           "name": "tests",
+#           "actions": [
+#             {
+#               "run": {
+#                 "argv": [
+#                   "bash",
+#                   "-lc",
+#                   "if [ -f pnpm-lock.yaml ] || [ \"${NODE_PKG_MANAGER}\" = \"pnpm\" ]; then pnpm test; elif [ -f yarn.lock ] || [ \"${NODE_PKG_MANAGER}\" = \"yarn\" ]; then yarn test; else npm test; fi"
+#                 ]
+#               }
+#             }
+#           ]
+#         }
+#       ]
+#     }
+#   ],
+#   "unsafe": {
+#     "allow_shell": false,
+#     "allow_tmux_passthrough": false
+#   }
+# }

@@ -1,0 +1,201 @@
+{
+  "$schema": "https://example.com/tmux-session-manager/project-spec.schema.json",
+  "version": 1,
+
+  "meta": {
+    "name": "example-project",
+    "description": "Example project-local tmux dev session definition.",
+    "notes": [
+      "Place this file at your project root as .tmux-session.json (or .tmux-session.yaml).",
+      "This is an example spec; the real implementation may support a subset initially.",
+      "Prefer 'actions' (whitelisted interface) for safety and portability.",
+      "Shell commands are supported only when explicitly enabled by the user (opt-in)."
+    ]
+  },
+
+  "session": {
+    "name": "${PROJECT_NAME}",
+    "root": "${PROJECT_PATH}",
+
+    "naming": {
+      "strategy": "basename",
+      "prefix": "dev",
+      "max_length": 45,
+      "lowercase": true
+    },
+
+    "tmux_options": {
+      "base_index": 1,
+      "pane_base_index": 1
+    },
+
+    "attach": {
+      "mode": "switch-client",
+      "enabled": true
+    }
+  },
+
+  "vars": {
+    "EDITOR_CMD": "${TMUX_SESSION_MANAGER_EDITOR_CMD:-nvim .}",
+    "SHELL_CMD": "${TMUX_SESSION_MANAGER_TERM_CMD:-${SHELL}}",
+
+    "NODE_DEV_CMD": "${TMUX_SESSION_MANAGER_NODE_DEV_CMD:-npm run dev}",
+    "NODE_TEST_CMD": "${TMUX_SESSION_MANAGER_NODE_TEST_CMD:-npm test}",
+
+    "PY_RUN_CMD": "${TMUX_SESSION_MANAGER_PY_RUN_CMD:-python -m app}",
+    "PY_TEST_CMD": "${TMUX_SESSION_MANAGER_PY_TEST_CMD:-pytest -q}",
+
+    "GO_RUN_CMD": "${TMUX_SESSION_MANAGER_GO_RUN_CMD:-go run ./...}",
+    "GO_TEST_CMD": "${TMUX_SESSION_MANAGER_GO_TEST_CMD:-go test ./...}"
+  },
+
+  "execution": {
+    "mode": "actions-only",
+
+    "allow_shell": false,
+
+    "allow_tmux_passthrough": false,
+
+    "passthrough_allowlist": [
+      "set-option",
+      "set-window-option",
+      "select-layout",
+      "rename-window",
+      "split-window",
+      "new-window",
+      "send-keys",
+      "select-pane",
+      "select-window"
+    ]
+  },
+
+  "templates": [
+    {
+      "id": "node",
+      "name": "Node.js / TypeScript",
+      "match": {
+        "any_files": ["package.json"]
+      },
+
+      "windows": [
+        {
+          "name": "editor",
+          "root": "${PROJECT_PATH}",
+          "layout": "main-vertical",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "${EDITOR_CMD}" } },
+            { "run": { "type": "shell", "command": "${SHELL_CMD}" } }
+          ]
+        },
+
+        {
+          "name": "dev",
+          "root": "${PROJECT_PATH}",
+          "layout": "even-horizontal",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "${NODE_DEV_CMD}" } },
+            { "run": { "type": "shell", "command": "${NODE_TEST_CMD}" } }
+          ]
+        },
+
+        {
+          "name": "git",
+          "root": "${PROJECT_PATH}",
+          "layout": "even-vertical",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "git status -sb; ${SHELL_CMD}" } },
+            { "run": { "type": "shell", "command": "git log --oneline --decorate -n 50; ${SHELL_CMD}" } }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "python",
+      "name": "Python",
+      "match": {
+        "any_files": ["pyproject.toml", "requirements.txt", "setup.py"]
+      },
+
+      "windows": [
+        {
+          "name": "editor",
+          "root": "${PROJECT_PATH}",
+          "layout": "main-vertical",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "${EDITOR_CMD}" } },
+            { "run": { "type": "shell", "command": "${SHELL_CMD}" } }
+          ]
+        },
+
+        {
+          "name": "run",
+          "root": "${PROJECT_PATH}",
+          "layout": "even-horizontal",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "${PY_RUN_CMD}" } },
+            { "run": { "type": "shell", "command": "${PY_TEST_CMD}" } }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "go",
+      "name": "Go",
+      "match": {
+        "any_files": ["go.mod"]
+      },
+
+      "windows": [
+        {
+          "name": "editor",
+          "root": "${PROJECT_PATH}",
+          "layout": "main-vertical",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "${EDITOR_CMD}" } },
+            { "run": { "type": "shell", "command": "${SHELL_CMD}" } }
+          ]
+        },
+
+        {
+          "name": "build",
+          "root": "${PROJECT_PATH}",
+          "layout": "even-horizontal",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "${GO_TEST_CMD}; ${SHELL_CMD}" } },
+            { "run": { "type": "shell", "command": "${GO_RUN_CMD}" } }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "minimal",
+      "name": "Minimal",
+      "match": { "fallback": true },
+
+      "windows": [
+        {
+          "name": "editor",
+          "root": "${PROJECT_PATH}",
+          "layout": "main-vertical",
+          "panes": [
+            { "focus": true, "run": { "type": "shell", "command": "${EDITOR_CMD}" } },
+            { "run": { "type": "shell", "command": "${SHELL_CMD}" } }
+          ]
+        }
+      ]
+    }
+  ],
+
+  "actions": [
+    {
+      "id": "preflight",
+      "description": "Example preflight actions (whitelisted).",
+      "steps": [
+        { "type": "tmux", "command": ["set-option", "-t", "${SESSION_NAME}", "status", "on"] }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,224 @@
+# tmux-session-manager - templates.example.yaml
+#
+# Copy to:
+#   ~/.config/tmux-session-manager/templates.yaml
+#
+# These templates define "development sessions" you can instantiate quickly.
+# The plugin is expected to apply a template by creating (or switching to) a
+# tmux session and then building windows/panes with commands.
+#
+# Notes / conventions:
+# - All paths are user-expanded by the plugin (e.g. "~" and "$HOME").
+# - Variables in strings use ${VAR} syntax. The plugin should substitute from:
+#   - environment variables (process env)
+#   - built-in vars (documented below)
+# - Commands are shell snippets executed via: bash -lc "<cmd>"
+#
+# Built-in vars the plugin should provide:
+# - ${PROJECT_NAME}   Session name (usually derived from project dir basename)
+# - ${PROJECT_PATH}   Absolute path to project directory
+# - ${TMUX_SOCK}      Optional tmux socket name (if the user runs multiple servers)
+#
+# Recommended env vars the plugin should honor:
+# - TMUX_SESSION_MANAGER_LAYOUTS_DIR    (default: ~/.config/tmux-session-manager/layouts)
+# - TMUX_SESSION_MANAGER_DEFAULT_STACK  (default: "node")
+# - TMUX_SESSION_MANAGER_LAUNCH_MODE    ("window" or "popup", default: "window")
+# - TMUX_SESSION_MANAGER_ATTACH         ("on"/"off", default: "on")
+# - TMUX_SESSION_MANAGER_EDITOR_CMD     (default: "nvim .")
+# - TMUX_SESSION_MANAGER_TERM_CMD       (default: "$SHELL")
+#
+# This file intentionally contains only safe defaults.
+# You can delete sections you don't use.
+
+version: 1
+
+defaults:
+  # How tmux should name/create sessions from a directory
+  session:
+    name_strategy: "basename" # basename | fullpath_hash | custom
+    base_index: 1
+    pane_base_index: 1
+    set_default_path: true
+
+  # How windows/panes are created
+  tmux:
+    window_options:
+      remain_on_exit: false
+      automatic_rename: true
+    pane_options:
+      remain_on_exit: false
+
+  # Generic commands (can be overridden per template)
+  commands:
+    editor: "${TMUX_SESSION_MANAGER_EDITOR_CMD:-nvim .}"
+    shell: "${TMUX_SESSION_MANAGER_TERM_CMD:-${SHELL}}"
+
+templates:
+  # --------------------------------------------------------------------------
+  # Node / JS / TS
+  # --------------------------------------------------------------------------
+  - id: "node"
+    name: "Node.js / TypeScript"
+    description: "Editor + dev server + tests + git/log tail"
+    match:
+      any_files: ["package.json"]
+      any_dirs: ["node_modules"] # optional; presence can increase confidence
+    session:
+      rename_to: "${PROJECT_NAME}"
+      chdir: "${PROJECT_PATH}"
+      attach: "${TMUX_SESSION_MANAGER_ATTACH:-on}"
+    windows:
+      - name: "editor"
+        chdir: "${PROJECT_PATH}"
+        layout: "main-vertical"
+        panes:
+          - name: "nvim"
+            command: "${defaults.commands.editor}"
+            focus: true
+          - name: "shell"
+            command: "${defaults.commands.shell}"
+
+      - name: "dev"
+        chdir: "${PROJECT_PATH}"
+        layout: "even-horizontal"
+        panes:
+          - name: "dev"
+            # You may prefer pnpm/yarn; update as needed.
+            command: "npm run dev || npm start || ${defaults.commands.shell}"
+            focus: true
+          - name: "tests"
+            command: "npm test -- --watch || npm run test:watch || ${defaults.commands.shell}"
+
+      - name: "git"
+        chdir: "${PROJECT_PATH}"
+        layout: "even-vertical"
+        panes:
+          - name: "status"
+            command: "git status -sb; ${defaults.commands.shell}"
+            focus: true
+          - name: "log"
+            command: "git log --oneline --decorate -n 50; ${defaults.commands.shell}"
+
+  # --------------------------------------------------------------------------
+  # Python
+  # --------------------------------------------------------------------------
+  - id: "python"
+    name: "Python"
+    description: "Editor + venv + run + tests"
+    match:
+      any_files: ["pyproject.toml", "requirements.txt", "setup.py"]
+      any_dirs: [".venv", "venv"]
+    session:
+      rename_to: "${PROJECT_NAME}"
+      chdir: "${PROJECT_PATH}"
+      attach: "${TMUX_SESSION_MANAGER_ATTACH:-on}"
+    env:
+      # Default to a local venv; customize to your preference.
+      VENV_DIR: "${PROJECT_PATH}/.venv"
+    windows:
+      - name: "editor"
+        chdir: "${PROJECT_PATH}"
+        layout: "main-vertical"
+        panes:
+          - name: "nvim"
+            command: "${defaults.commands.editor}"
+            focus: true
+          - name: "shell"
+            command: "${defaults.commands.shell}"
+
+      - name: "run"
+        chdir: "${PROJECT_PATH}"
+        layout: "even-horizontal"
+        panes:
+          - name: "app"
+            command: >
+              if [ -d "${VENV_DIR}" ]; then . "${VENV_DIR}/bin/activate"; fi;
+              python -m pip --version >/dev/null 2>&1 || true;
+              python -m pip install -q -r requirements.txt 2>/dev/null || true;
+              python -m ${PYTHON_ENTRYPOINT:-app} 2>/dev/null || ${defaults.commands.shell}
+            focus: true
+          - name: "tests"
+            command: >
+              if [ -d "${VENV_DIR}" ]; then . "${VENV_DIR}/bin/activate"; fi;
+              pytest -q 2>/dev/null || python -m unittest 2>/dev/null || ${defaults.commands.shell}
+
+      - name: "tools"
+        chdir: "${PROJECT_PATH}"
+        layout: "even-vertical"
+        panes:
+          - name: "lint"
+            command: >
+              if [ -d "${VENV_DIR}" ]; then . "${VENV_DIR}/bin/activate"; fi;
+              ruff check . 2>/dev/null || flake8 2>/dev/null || ${defaults.commands.shell}
+            focus: true
+          - name: "fmt"
+            command: >
+              if [ -d "${VENV_DIR}" ]; then . "${VENV_DIR}/bin/activate"; fi;
+              ruff format . 2>/dev/null || black . 2>/dev/null || ${defaults.commands.shell}
+
+  # --------------------------------------------------------------------------
+  # Go
+  # --------------------------------------------------------------------------
+  - id: "go"
+    name: "Go"
+    description: "Editor + go test + run + git"
+    match:
+      any_files: ["go.mod"]
+      any_dirs: [".git"]
+    session:
+      rename_to: "${PROJECT_NAME}"
+      chdir: "${PROJECT_PATH}"
+      attach: "${TMUX_SESSION_MANAGER_ATTACH:-on}"
+    windows:
+      - name: "editor"
+        chdir: "${PROJECT_PATH}"
+        layout: "main-vertical"
+        panes:
+          - name: "nvim"
+            command: "${defaults.commands.editor}"
+            focus: true
+          - name: "shell"
+            command: "${defaults.commands.shell}"
+
+      - name: "build"
+        chdir: "${PROJECT_PATH}"
+        layout: "even-horizontal"
+        panes:
+          - name: "test"
+            command: "go test ./...; ${defaults.commands.shell}"
+            focus: true
+          - name: "run"
+            command: "go run ./... 2>/dev/null || go run . 2>/dev/null || ${defaults.commands.shell}"
+
+      - name: "git"
+        chdir: "${PROJECT_PATH}"
+        layout: "even-vertical"
+        panes:
+          - name: "status"
+            command: "git status -sb; ${defaults.commands.shell}"
+            focus: true
+          - name: "log"
+            command: "git log --oneline --decorate -n 50; ${defaults.commands.shell}"
+
+  # --------------------------------------------------------------------------
+  # Minimal fallback (when no stack match)
+  # --------------------------------------------------------------------------
+  - id: "minimal"
+    name: "Minimal"
+    description: "Editor + shell"
+    match:
+      fallback: true
+    session:
+      rename_to: "${PROJECT_NAME}"
+      chdir: "${PROJECT_PATH}"
+      attach: "${TMUX_SESSION_MANAGER_ATTACH:-on}"
+    windows:
+      - name: "editor"
+        chdir: "${PROJECT_PATH}"
+        layout: "main-vertical"
+        panes:
+          - name: "nvim"
+            command: "${defaults.commands.editor}"
+            focus: true
+          - name: "shell"
+            command: "${defaults.commands.shell}"
