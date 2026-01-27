@@ -8,97 +8,49 @@ import (
 	"time"
 )
 
-// Config contains runtime configuration resolved from (in priority order):
-//  1. Explicit CLI flags (wired in cmd layer)
-//  2. Environment variables
-//  3. tmux options (queried by launcher and passed via env, or by future in-proc tmux option lookup)
-//  4. Defaults
-//
-// This package intentionally does NOT talk to tmux directly; tmux option lookup should be done in the
-// launcher script (consistent with tmux-ssh-manager patterns) and passed via env.
-//
-// Security model:
-//
-// By default, project-local specs (.tmux-session.yaml/.json) are treated as untrusted input and may
-// only use "safe" actions (tmux primitives + send-keys without shell evaluation). Any action that
-// runs arbitrary shell is disabled unless explicitly enabled via env/tmux option.
-//
-// This package captures those toggles + allowlists so other layers can enforce them.
+// Config contains runtime configuration resolved by the cmd/launcher layer and environment.
 type Config struct {
-	// LaunchMode is a hint for UI tweaks; the launcher is responsible for actually running popup/window.
-	// Allowed: "window", "popup".
+	// LaunchMode is a UI hint ("window" or "popup").
 	LaunchMode string
 
-	// Project discovery roots (comma-separated in env).
 	ProjectRoots []string
 
-	// ProjectScanDepth controls recursive scanning depth under each root. 0 means default.
 	ProjectScanDepth int
 
-	// IgnoreDirNames excludes directories by basename while scanning.
 	IgnoreDirNames []string
 
-	// Spec file names accepted within a project directory.
-	// Defaults: [".tmux-session.yaml", ".tmux-session.yml", ".tmux-session.json"].
 	SpecFilenames []string
 
-	// PreferProjectLocalSpec, when true, will use a project-local spec file if present. Default: true.
 	PreferProjectLocalSpec bool
 
-	// Allowlist + unsafe execution controls
 	Safety Safety
 
-	// Defaults used when spec does not define certain fields.
 	Defaults Defaults
 
-	// Logging/debug flags
 	Debug bool
 
-	// Timeouts for operations that invoke tmux.
 	CommandTimeout time.Duration
 }
 
 // Safety governs what kinds of actions are allowed when applying specs/templates.
 type Safety struct {
-	// AllowShell, when true, enables shell execution actions (arbitrary commands) in specs/templates.
-	// Default: false.
-	AllowShell bool
-
-	// AllowTmuxPassthrough, when true, allows raw tmux subcommand passthrough actions in specs/templates.
-	// Default: false.
+	AllowShell           bool
 	AllowTmuxPassthrough bool
 
-	// AllowedTmuxCommands is an allowlist for tmux subcommands when passthrough is enabled.
-	// If empty, a conservative default allowlist is used.
 	AllowedTmuxCommands []string
+	DeniedTmuxCommands  []string
 
-	// DeniedTmuxCommands always denies these tmux subcommands even if allowlisted.
-	// This should include particularly risky commands by default.
-	DeniedTmuxCommands []string
-
-	// AllowedShellPrefixes optionally restricts arbitrary shell commands to those that begin with
-	// one of these prefixes (trimmed). If empty and AllowShell==true, any shell command is allowed.
-	// Example: ["npm ", "pnpm ", "yarn ", "go ", "python ", "pytest "].
 	AllowedShellPrefixes []string
 }
 
 // Defaults are values applied when a spec omits fields.
 type Defaults struct {
-	// DefaultTemplate is used when no project-local spec exists and template inference is inconclusive.
-	// Common: "empty", "node", "python", "go", "auto".
 	DefaultTemplate string
-
-	// EditorCmd is used by built-in templates/specs that reference an editor.
-	EditorCmd string
-
-	// ShellCmd is the fallback interactive shell command for panes/windows.
-	ShellCmd string
-
-	// SessionPrefix is used when generating session names from project dirs (if enabled by higher layers).
-	SessionPrefix string
+	EditorCmd       string
+	ShellCmd        string
+	SessionPrefix   string
 }
 
-// EnvKeys groups supported env variables.
 type EnvKeys struct {
 	LaunchMode    string
 	Roots         string
@@ -120,8 +72,6 @@ type EnvKeys struct {
 	AllowedShellPrefixes string
 }
 
-// DefaultEnvKeys returns the canonical env variable names.
-// These are designed to be stable when the project is extracted into its own repo.
 func DefaultEnvKeys() EnvKeys {
 	return EnvKeys{
 		LaunchMode:    "TMUX_SESSION_MANAGER_LAUNCH_MODE",

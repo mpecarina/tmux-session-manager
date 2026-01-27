@@ -1,12 +1,12 @@
 package manager
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,35 +18,7 @@ import (
 	"tmux-session-manager/pkg/templates"
 )
 
-// RunTUI launches the Bubble Tea TUI with vim-like motions and tmux-aware actions.
-//
-// Keymap (default):
-//   - j/k          move selection
-//   - g g          go to top
-//   - G            go to bottom
-//   - Ctrl-u/d     page up/down
-//   - /            focus search
-//   - Esc          blur search
-
-//   - Enter        switch/attach/create session (if query is non-empty and no match, create)
-//   - d            kill selected session (confirm)
-//   - r            rename selected session (prompt)
-//   - n            new session (prompt)
-//   - ctrl+p       force projects mode
-//   - ctrl+o       force sessions mode
-//   - tab / ctrl+t toggle mode (sessions <-> projects)
-//   - w            create/switch session from selected project (prompt if needed)
-//   - t            cycle template (node/python/go/empty) (for new project sessions)
-//   - p            toggle preview pane
-//   - ? / h         help
-//   - q            quit
-//
-// Debugging:
-//   - This build shows a visible startup banner + last-key footer unconditionally to verify the correct binary is running.
-//
-// Notes:
-//   - The TUI is intentionally "thin": spec parsing, plan building, and policy enforcement live in
-//     pkg/spec and pkg/templates. The TUI only orchestrates selection + preview + execution.
+// RunTUI launches the Bubble Tea UI.
 func RunTUI(opts UIOptions) error {
 	// Improve rendering reliability when launched inside tmux popups/wrappers.
 	if os.Getenv("TMUX_SESSION_MANAGER_IN_POPUP") != "" {
@@ -114,6 +86,12 @@ type listMode int
 const (
 	modeSessions listMode = iota
 	modeProjects
+)
+
+// snapshot defaults / paths
+const (
+	defaultSnapshotDirName  = "tmux-session-manager"
+	defaultSnapshotFileMode = 0o600
 )
 
 type templateKind int
@@ -191,8 +169,8 @@ type sessionItem struct {
 	Name      string
 	Windows   int
 	Attached  bool
-	CreatedAt string // best-effort, may be empty
-	RawLine   string // original format line for debugging
+	CreatedAt string
+	RawLine   string
 }
 
 type projectItem struct {
@@ -611,6 +589,13 @@ func (m model) handleGlobalKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmKill = true
 		return m, nil
 
+	case "e":
+		// Edit mode:
+		// - snapshot current session to ~/.config/tmux-session-manager/snapshots/<name>.<ts>.tmux-session.yaml
+		// - create new session rooted at current pane path
+		// - open editor there
+		return m.editNewSessionInCurrentDir()
+
 	case "t":
 		// cycle template (only meaningful for project-driven create)
 		m.template = (m.template + 1) % 4
@@ -883,30 +868,6 @@ func (m *model) refreshProjects() {
 	paths := m.opts.ProjectsPaths
 	depth := m.opts.ProjectScanDepth
 
-	// Fallback: if launcher/env didn't populate options, read from tmux options directly
-	// when inside tmux. This makes @tmux_session_manager_roots etc. effective even if the
-	// script-based launcher isn't used.
-	if (len(paths) == 0 || depth <= 0) && strings.TrimSpace(os.Getenv("TMUX")) != "" {
-		if rootsCsv, err := tmuxShowGlobalOption("@tmux_session_manager_roots"); err == nil {
-			if rr := splitCommaAndTrim(rootsCsv); len(rr) > 0 {
-				paths = rr
-			}
-		}
-		if depth <= 0 {
-			if ds, err := tmuxShowGlobalOption("@tmux_session_manager_project_depth"); err == nil {
-				if n, nerr := strconv.Atoi(strings.TrimSpace(ds)); nerr == nil && n > 0 {
-					depth = n
-				}
-			}
-		}
-		// Ignore dirs are only relevant if scan depth > 1; still load it to keep behavior consistent.
-		if ignoreCsv, err := tmuxShowGlobalOption("@tmux_session_manager_ignore_dirs"); err == nil {
-			if ig := splitCommaAndTrim(ignoreCsv); len(ig) > 0 {
-				setScanIgnoreDirs(ig)
-			}
-		}
-	}
-
 	// Default roots if still empty.
 	if len(paths) == 0 {
 		home, _ := os.UserHomeDir()
@@ -1174,7 +1135,7 @@ func (m model) View() string {
 	if m.showHelp {
 		fmt.Fprintf(&b, "\n%s\n", hlStyle.Render("help"))
 		fmt.Fprintf(&b, "%s\n", dimStyle.Render("j/k move · gg/G top/bottom · ctrl-u/d page · / search · tab toggle mode"))
-		fmt.Fprintf(&b, "%s\n", dimStyle.Render("enter switch/attach/create · d kill (confirm) · r rename · n new session · w create from project"))
+		fmt.Fprintf(&b, "%s\n", dimStyle.Render("enter switch/attach/create · d kill (confirm) · r rename · n new session · w create from project · e edit (snapshot+new)"))
 		fmt.Fprintf(&b, "%s\n", dimStyle.Render("t cycle template (node/python/go/empty) · p preview · q quit"))
 	}
 
@@ -1209,16 +1170,11 @@ func (m model) previewText() string {
 			return "new session:\n  " + sn
 		}
 
-		// Richer preview:
-		// 1) session summary (windows + active info)
-		// 2) capture of active pane tail (best-effort)
 		out, err := tmuxCaptureSessionSummary(name)
 		if err != nil {
 			return "preview error: " + err.Error()
 		}
 
-		// Best-effort capture of the active pane's tail for a more sessionx-like preview.
-		// This can fail if permissions/targeting differ; we keep it non-fatal.
 		if tail, terr := tmuxCaptureSessionActivePaneTail(name, clampInt(m.opts.PreviewLines, 5, 40)); terr == nil && strings.TrimSpace(tail) != "" {
 			return out + "\n\npane tail:\n" + strings.TrimRight(tail, "\n")
 		}
@@ -1389,6 +1345,233 @@ func tmuxNewSessionDetached(name string, dir string) error {
 	return exec.Command("tmux", args...).Run()
 }
 
+// ---------- edit mode: snapshot current session + new session in current dir ----------
+
+func (m model) editNewSessionInCurrentDir() (tea.Model, tea.Cmd) {
+
+	curSession, _ := tmuxCurrentSessionName()
+	curDir, _ := tmuxCurrentPanePath()
+	if strings.TrimSpace(curDir) == "" {
+		m.setStatus("edit: could not determine current dir", 2000*time.Millisecond)
+		return m, nil
+	}
+
+	// Snapshot first.
+	var snapPath string
+	if strings.TrimSpace(curSession) != "" {
+		if p, err := snapshotSessionToSpecFile(curSession); err == nil && p != "" {
+			snapPath = p
+		}
+	}
+
+	// Create a new session name derived from dir basename.
+	base := filepath.Base(strings.TrimRight(curDir, string(filepath.Separator)))
+	newName := sanitizeSessionName(base)
+	if newName == "" {
+		newName = "edit"
+	}
+	// Avoid collision by suffixing _2, _3, ...
+	newName = makeUniqueSessionName(newName, 50)
+
+	if err := tmuxNewSessionDetached(newName, curDir); err != nil {
+		m.setStatus("edit: create failed: "+err.Error(), 2500*time.Millisecond)
+		return m, nil
+	}
+
+	// Open editor in the new session.
+	// Prefer env var already supported by config layer; fallback to nvim.
+	editor := strings.TrimSpace(os.Getenv("TMUX_SESSION_MANAGER_EDITOR_CMD"))
+	if editor == "" {
+		editor = "nvim ."
+	}
+	_ = exec.Command("tmux", "send-keys", "-t", newName+":", editor, "Enter").Run()
+
+	if err := tmuxSwitchClient(newName); err != nil {
+		m.setStatus("edit: switch failed: "+err.Error(), 2500*time.Millisecond)
+		return m, nil
+	}
+
+	if snapPath != "" {
+		m.setStatus("edit: created "+newName+" (snapshot: "+snapPath+")", 2200*time.Millisecond)
+	} else if strings.TrimSpace(curSession) != "" {
+		m.setStatus("edit: created "+newName+" (snapshot failed)", 2200*time.Millisecond)
+	} else {
+		m.setStatus("edit: created "+newName, 1800*time.Millisecond)
+	}
+
+	return m, tea.Quit
+}
+
+func tmuxCurrentPanePath() (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-F", "#{pane_current_path}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func tmuxCurrentSessionName() (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-F", "#{session_name}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func makeUniqueSessionName(base string, maxTries int) string {
+	base = sanitizeSessionName(base)
+	if base == "" {
+		base = "session"
+	}
+	// If not exists, use base.
+	exists, _ := tmuxHasSession(base)
+	if !exists {
+		return base
+	}
+	for i := 2; i <= maxTries; i++ {
+		try := fmt.Sprintf("%s_%d", base, i)
+		exists, _ := tmuxHasSession(try)
+		if !exists {
+			return try
+		}
+	}
+	// last resort: include timestamp-ish suffix
+	return fmt.Sprintf("%s_%d", base, time.Now().Unix())
+}
+
+func snapshotSessionToSpecFile(sessionName string) (string, error) {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return "", errors.New("snapshot: empty session name")
+	}
+
+	home, _ := os.UserHomeDir()
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("snapshot: no home dir")
+	}
+
+	dir := filepath.Join(home, ".config", "tmux-session-manager", "snapshots")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("snapshot: mkdir: %w", err)
+	}
+
+	ts := time.Now().Format("20060102-150405")
+	fileName := fmt.Sprintf("%s.%s.tmux-session.yaml", sanitizeSessionName(sessionName), ts)
+	outPath := filepath.Join(dir, fileName)
+
+	specText, err := tmuxSnapshotAsSpecYAML(sessionName)
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.WriteFile(outPath, []byte(specText), defaultSnapshotFileMode); err != nil {
+		return "", fmt.Errorf("snapshot: write: %w", err)
+	}
+
+	return outPath, nil
+}
+
+// tmuxSnapshotAsSpecYAML builds a tmux-session-manager spec that rehydrates the session shape
+// (windows, layouts, pane cwd, and current command).
+func tmuxSnapshotAsSpecYAML(sessionName string) (string, error) {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return "", errors.New("snapshot: empty session name")
+	}
+
+	// Get windows (index, name, layout).
+	// Use "index|name|layout".
+	wOut, err := exec.Command(
+		"tmux",
+		"list-windows",
+		"-t", sessionName,
+		"-F", "#{window_index}|#{window_name}|#{window_layout}",
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("snapshot: list-windows: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(wOut)), "\n")
+
+	// Start YAML
+	var b strings.Builder
+	b.WriteString("version: 1\n")
+	b.WriteString("session:\n")
+	b.WriteString("  name: \"" + escapeYAMLString(sessionName) + "\"\n")
+	b.WriteString("  root: \"${PROJECT_PATH}\"\n")
+	b.WriteString("  attach: true\n")
+	b.WriteString("  switch_client: true\n")
+	b.WriteString("\n")
+	b.WriteString("windows:\n")
+
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		parts := strings.SplitN(ln, "|", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		wIdx := strings.TrimSpace(parts[0])
+		wName := strings.TrimSpace(parts[1])
+		wLayout := strings.TrimSpace(parts[2])
+
+		// panes: pane_index|pane_title|pane_current_path|pane_current_command
+		pOut, pErr := exec.Command(
+			"tmux",
+			"list-panes",
+			"-t", sessionName+":"+wIdx,
+			"-F", "#{pane_index}|#{pane_title}|#{pane_current_path}|#{pane_current_command}",
+		).Output()
+		if pErr != nil {
+			// Keep going; emit window without panes.
+			pOut = []byte{}
+		}
+		pLines := strings.Split(strings.TrimSpace(string(pOut)), "\n")
+
+		b.WriteString("  - name: \"" + escapeYAMLString(wName) + "\"\n")
+		b.WriteString("    root: \"${PROJECT_PATH}\"\n")
+		if wLayout != "" {
+			b.WriteString("    layout: \"" + escapeYAMLString(wLayout) + "\"\n")
+		}
+		b.WriteString("    panes:\n")
+
+		for _, pl := range pLines {
+			pl = strings.TrimSpace(pl)
+			if pl == "" {
+				continue
+			}
+			pp := strings.SplitN(pl, "|", 4)
+			if len(pp) < 4 {
+				continue
+			}
+			pTitle := strings.TrimSpace(pp[1])
+			pCwd := strings.TrimSpace(pp[2])
+			pCmd := strings.TrimSpace(pp[3])
+
+			b.WriteString("      - name: \"" + escapeYAMLString(pTitle) + "\"\n")
+			if pCwd != "" {
+				b.WriteString("        root: \"" + escapeYAMLString(pCwd) + "\"\n")
+			}
+
+			_ = pCmd
+		}
+	}
+
+	return b.String(), nil
+}
+
+func escapeYAMLString(s string) string {
+	// Minimal escape for double-quoted YAML scalars.
+	// Replace backslash and double quote; normalize newlines to spaces.
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
 func tmuxKillSession(name string) error {
 	return exec.Command("tmux", "kill-session", "-t", name).Run()
 }
@@ -1419,8 +1602,7 @@ func tmuxCaptureSessionSummary(name string) (string, error) {
 	return b.String(), nil
 }
 
-// tmuxCaptureSessionActivePaneTail captures the tail of the active pane for the session.
-// This is best-effort and intended only for preview UX.
+// tmuxCaptureSessionActivePaneTail captures the tail of the active pane for preview.
 func tmuxCaptureSessionActivePaneTail(sessionName string, lines int) (string, error) {
 	sessionName = strings.TrimSpace(sessionName)
 	if sessionName == "" {
@@ -1460,12 +1642,6 @@ func applyTemplate(sessionName, projectDir string, tpl templateKind) error {
 }
 
 func applyNodeTemplate(sessionName, dir string) error {
-	// editor window: split: left (shell), right (shell)
-	// server window: run npm/pnpm/yarn dev (best-effort) in first pane
-	//
-	// IMPORTANT:
-	// Do not target window/pane index 0. Users commonly set base-index/pane-base-index to 1.
-	// Target by window name (first window) and active pane when possible.
 	_ = exec.Command("tmux", "rename-window", "-t", sessionName+":", "editor").Run()
 	_ = exec.Command("tmux", "split-window", "-t", sessionName+":editor", "-h", "-c", dir).Run()
 
@@ -1474,32 +1650,25 @@ func applyNodeTemplate(sessionName, dir string) error {
 
 	cmd := detectNodeDevCommand(dir)
 	if cmd != "" {
-		// After creating the new window, the active pane is the first pane; avoid ".0".
 		_ = exec.Command("tmux", "send-keys", "-t", sessionName+":server", cmd, "Enter").Run()
 	}
 	return nil
 }
 
 func applyPythonTemplate(sessionName, dir string) error {
-	// Avoid targeting ":0" (base-index may be 1). Target the first window via ":" then by name.
 	_ = exec.Command("tmux", "rename-window", "-t", sessionName+":", "editor").Run()
 	_ = exec.Command("tmux", "split-window", "-t", sessionName+":editor", "-h", "-c", dir).Run()
 
 	_ = exec.Command("tmux", "new-window", "-t", sessionName, "-n", "repl", "-c", dir).Run()
-	// Prefer uv/poetry/venv if you later integrate; for now plain python.
-	// Avoid ".0" (pane-base-index may be 1); target the window's active pane.
 	_ = exec.Command("tmux", "send-keys", "-t", sessionName+":repl", "python", "Enter").Run()
 	return nil
 }
 
 func applyGoTemplate(sessionName, dir string) error {
-	// Avoid targeting ":0" (base-index may be 1). Target the first window via ":" then by name.
 	_ = exec.Command("tmux", "rename-window", "-t", sessionName+":", "editor").Run()
 	_ = exec.Command("tmux", "split-window", "-t", sessionName+":editor", "-h", "-c", dir).Run()
 
 	_ = exec.Command("tmux", "new-window", "-t", sessionName, "-n", "run", "-c", dir).Run()
-	// If there's a main module, `go run ./...` can be noisy; use `go test ./...` as safe default.
-	// Avoid ".0" (pane-base-index may be 1); target the window's active pane.
 	_ = exec.Command("tmux", "send-keys", "-t", sessionName+":run", "go test ./...", "Enter").Run()
 	return nil
 }
@@ -1522,50 +1691,7 @@ func detectNodeDevCommand(projectDir string) string {
 	return ""
 }
 
-// ---------- tmux option helpers (fallback) ----------
-
-// tmuxShowGlobalOption returns the value of a tmux global option (e.g. "@foo").
-// Best-effort: returns error if tmux isn't available.
-func tmuxShowGlobalOption(opt string) (string, error) {
-	opt = strings.TrimSpace(opt)
-	if opt == "" {
-		return "", fmt.Errorf("empty tmux option")
-	}
-	out, err := exec.Command("tmux", "show", "-gqv", opt).Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func splitCommaAndTrim(csv string) []string {
-	if strings.TrimSpace(csv) == "" {
-		return nil
-	}
-	parts := strings.Split(csv, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		// Expand ~/ for convenience
-		if strings.HasPrefix(p, "~/") {
-			home, _ := os.UserHomeDir()
-			if home != "" {
-				p = filepath.Join(home, p[2:])
-			}
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
-// setScanIgnoreDirs is a best-effort hook to configure project scanning ignore dirs.
-// If the scanner doesn't support it yet, this becomes a no-op.
-func setScanIgnoreDirs(_ []string) {
-	// Intentionally left as a no-op until scanProjects supports ignore dirs natively.
-}
+// ---------- misc helpers ----------
 
 // ---------- projects scanning / preview ----------
 
@@ -1828,24 +1954,6 @@ func parseEnvBool(key string, def bool) bool {
 	}
 }
 
-// -----------------------------
-// Project-local session specs
-// -----------------------------
-
-// NOTE: project-local spec detection is handled by pkg/spec (LoadProjectLocal).
-// This file intentionally does not define spec filename constants or duplicate "find spec file" logic.
-
-// NOTE: project-local spec parsing, plan building, policy enforcement, and execution
-// have been refactored into:
-//   - pkg/spec      (schema + loader + policy validation)
-//   - pkg/templates (compilation to tmux command list + execution + dry-run rendering)
-//
-// The Bubble Tea TUI should remain thin and only:
-//   - detect presence of spec files
-//   - call spec.LoadProjectLocal()
-//   - validate via Spec.ValidatePolicy()
-//   - compile/execute via templates.Engine
-
 func renderHardcodedTemplatePlan(sessionName, projectDir string, tpl templateKind) string {
 	// Session is created by caller, so show template operations only.
 	if sessionName == "" {
@@ -1873,5 +1981,3 @@ func renderHardcodedTemplatePlan(sessionName, projectDir string, tpl templateKin
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
-
-// NOTE: removed duplicate helpers (expandHome, fileExists). Use the earlier definitions in this file.

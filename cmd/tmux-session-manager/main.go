@@ -15,137 +15,87 @@ import (
 )
 
 var (
-	// Config / templates
 	flagConfigPath        string
 	flagPreferProjectSpec bool
-	flagProjectSpecNames  string // comma-separated basenames (e.g. ".tmux-session.yaml,.tmux-session.json")
+	flagProjectSpecNames  string
 
-	// Spec apply mode (explicit)
-	flagSpecPath    string // path to a spec file (.yaml/.yml/.json)
-	flagSpecSession string // optional: force session name when applying a spec
-	flagSpecCwd     string // optional: working directory for apply (used for relative paths / env)
+	flagSpecPath    string
+	flagSpecSession string
+	flagSpecCwd     string
 
-	// Project apply mode (resolve by name under roots)
-	flagProjectName string // e.g. "vmlab" -> <root>/vmlab/.tmux-session.yaml (or yml/json)
+	flagProjectName string
 
-	// Outside-tmux behavior (must be explicit)
-	flagBootstrap bool
-
-	// Internal bootstrap plumbing (do not document; used by the bootstrapper)
+	flagBootstrap            bool
 	flagBootstrapInitSession string
 
-	// Safety toggles (must be explicit)
 	flagAllowShell           bool
 	flagAllowTmuxPassthrough bool
 
-	// UX / TUI
 	flagInitialQuery string
 	flagMaxResults   int
-	flagLaunchMode   string // "window" (default) or "popup"
-	flagKeyBind      string // convenience: print a suggested binding line
+	flagLaunchMode   string
+	flagKeyBind      string
 
-	// Project discovery
-	flagRoots string // comma-separated absolute paths
+	flagRoots string
 	flagDepth int
 
-	// Template choice (in-TUI)
-	flagTemplate string // "auto"|"empty"|"node"|"python"|"go"
-
-	// Debug / operational visibility
-	flagDryRun bool
+	flagTemplate string
+	flagDryRun   bool
 )
 
 func init() {
-	flag.StringVar(&flagConfigPath, "config", "", "(optional) Path to global config file (reserved; may be used later)")
-	flag.BoolVar(&flagPreferProjectSpec, "prefer-project-spec", true, "Prefer project-local .tmux-session.{yaml,json} spec over built-in templates (if present)")
+	flag.StringVar(&flagConfigPath, "config", "", "Path to global config file (optional)")
+	flag.BoolVar(&flagPreferProjectSpec, "prefer-project-spec", true, "Prefer project-local session spec over built-in templates")
 	flag.StringVar(&flagProjectSpecNames, "project-spec-names", ".tmux-session.yaml,.tmux-session.yml,.tmux-session.json", "Comma-separated project-local spec filenames to look for")
 
-	// Explicit spec apply mode:
-	// - When --spec is provided, tmux-session-manager will apply that spec file directly, without project discovery.
-	// - This is intended for integrations (e.g. other plugins exporting a spec to ~/.config/...).
-	flag.StringVar(&flagSpecPath, "spec", "", "Apply a tmux-session-manager spec file directly (.yaml/.yml/.json). When set, project discovery is skipped.")
-	flag.StringVar(&flagSpecSession, "spec-session", "", "Override/force the tmux session name when applying --spec (optional)")
-	flag.StringVar(&flagSpecCwd, "spec-cwd", "", "Working directory for applying --spec (optional; used for resolving relative paths)")
+	flag.StringVar(&flagSpecPath, "spec", "", "Apply a spec file directly (.yaml/.yml/.json); skips project discovery")
+	flag.StringVar(&flagSpecSession, "spec-session", "", "Override tmux session name when applying --spec")
+	flag.StringVar(&flagSpecCwd, "spec-cwd", "", "Working directory for applying --spec (resolves relative paths)")
 
-	// Project apply mode:
-	// - When --project is provided, tmux-session-manager resolves the project directory under --roots (or defaults),
-	//   finds a project-local spec (by name from --project-spec-names), and applies it.
-	flag.StringVar(&flagProjectName, "project", "", "Apply a project by name by resolving <root>/<project>/.tmux-session.(yaml|yml|json) under --roots (or defaults)")
+	flag.StringVar(&flagProjectName, "project", "", "Apply a project by name by resolving <root>/<project>/.tmux-session.(yaml|yml|json) under --roots")
 
-	// Outside-tmux behavior:
-	// - By default, applying a spec/project is intended to run from inside tmux (via the plugin).
-	// - If you want the CLI to start/attach tmux from a normal terminal, explicitly opt in.
-	flag.BoolVar(&flagBootstrap, "bootstrap", false, "When run outside tmux with --project/--spec, start/attach an init tmux session and re-run inside tmux (opt-in). Can also be enabled via TMUX_SESSION_MANAGER_BOOTSTRAP=1.")
+	flag.BoolVar(&flagBootstrap, "bootstrap", false, "When run outside tmux with --project/--spec, start/attach tmux and re-run inside it (opt-in)")
+	flag.StringVar(&flagBootstrapInitSession, "bootstrap-init-session", "", "INTERNAL: bootstrap init session name")
 
-	// Internal-only: name of init session to clean up after successful switch to target session.
-	// This is injected by the bootstrapper and should not be set manually.
-	flag.StringVar(&flagBootstrapInitSession, "bootstrap-init-session", "", "INTERNAL: init tmux session name for bootstrap cleanup")
-
-	flag.BoolVar(&flagAllowShell, "allow-shell", false, "Allow templates/specs to execute arbitrary shell commands (unsafe; requires explicit opt-in)")
-	flag.BoolVar(&flagAllowTmuxPassthrough, "allow-tmux-passthrough", false, "Allow templates/specs to run raw tmux commands (advanced; requires explicit opt-in)")
+	flag.BoolVar(&flagAllowShell, "allow-shell", false, "Allow specs/templates to execute shell commands (unsafe; opt-in)")
+	flag.BoolVar(&flagAllowTmuxPassthrough, "allow-tmux-passthrough", false, "Allow specs/templates to run raw tmux commands (advanced; opt-in)")
 
 	flag.StringVar(&flagInitialQuery, "query", "", "Initial query for the TUI selector")
 	flag.IntVar(&flagMaxResults, "max", 30, "Maximum results to display in the TUI (0 uses default)")
-	flag.StringVar(&flagLaunchMode, "launch-mode", "", "Launch mode hint: 'window' (default) or 'popup' (respected by tmux launcher; CLI still runs normally)")
-	flag.StringVar(&flagKeyBind, "print-bind", "", "Print a suggested tmux binding line for the plugin (e.g. 'o' -> prefix+o) and exit")
+	flag.StringVar(&flagLaunchMode, "launch-mode", "", "Launch mode hint for tmux launcher: window|popup")
+	flag.StringVar(&flagKeyBind, "print-bind", "", "Print a suggested tmux binding line and exit")
 
-	flag.StringVar(&flagRoots, "roots", "", "Comma-separated absolute paths to scan for projects (default: ~/code,~/src,~/projects)")
-	flag.IntVar(&flagDepth, "depth", 2, "Project scan depth under roots (default: 2)")
+	flag.StringVar(&flagRoots, "roots", "", "Comma-separated roots to scan for projects (default: ~/code,~/src,~/projects)")
+	flag.IntVar(&flagDepth, "depth", 2, "Project scan depth under roots")
 	flag.StringVar(&flagTemplate, "template", "", "Default template in TUI: auto|empty|node|python|go")
 
-	flag.BoolVar(&flagDryRun, "dry-run", false, "Dry-run: show planned operations and do not execute (recommended when enabling unsafe execution)")
+	flag.BoolVar(&flagDryRun, "dry-run", false, "Dry-run: show planned operations and do not execute")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "tmux-session-manager - tmux-friendly session/project manager\n\n")
+		fmt.Fprintf(os.Stderr, "tmux-session-manager\n\n")
 		fmt.Fprintf(os.Stderr, "Usage:\n")
 		fmt.Fprintf(os.Stderr, "  tmux-session-manager [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  tmux-session-manager\n")
+		fmt.Fprintf(os.Stderr, "  tmux-session-manager --project vmlab\n")
+		fmt.Fprintf(os.Stderr, "  tmux-session-manager --spec /path/to/.tmux-session.yaml\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  # Open TUI selector
-  tmux-session-manager
-
-  # Apply a project by name (resolves under roots)
-  tmux-session-manager --project vmlab
-
-  # Apply a spec directly (integration mode)
-  tmux-session-manager --spec ~/Desktop/github/vmlab/.tmux-session.yaml --spec-session vmlab
-
-  # Enable arbitrary shell commands from specs (unsafe) + dry-run first
-  tmux-session-manager --allow-shell --dry-run
-
-Notes:
-  - popup/window behavior is controlled by the tmux launcher script; --launch-mode is a hint.
-  - Project-local session specs (e.g. .tmux-session.yaml/.json) can improve reproducibility per repo.
-  - Unsafe execution is always opt-in via flags and should be paired with --dry-run.
-`)
 	}
 }
 
 func main() {
 	flag.Parse()
 
-	// If the bootstrapper passed an init session name via flag, propagate it to env so any
-	// downstream code paths (or future refactors) can rely on a single source of truth.
 	if strings.TrimSpace(flagBootstrapInitSession) != "" && strings.TrimSpace(os.Getenv("TMUX_SESSION_MANAGER_INIT_SESSION")) == "" {
 		_ = os.Setenv("TMUX_SESSION_MANAGER_INIT_SESSION", strings.TrimSpace(flagBootstrapInitSession))
 	}
 
-	// Convenience helper: print a tmux binding line and exit
 	if flagKeyBind != "" {
 		printSuggestedBind(flagKeyBind)
 		return
 	}
 
-	// Outside-tmux bootstrap (OPT-IN):
-	// For uniform behavior, if invoked outside tmux with an explicit intent (--project or --spec),
-	// optionally attach to an ephemeral init tmux session and re-run the CLI *inside* tmux.
-	//
-	// IMPORTANT:
-	// - This is opt-in via --bootstrap or TMUX_SESSION_MANAGER_BOOTSTRAP=1
-	// - Otherwise we must not create sessions/servers when run from a normal shell, to avoid
-	//   surprising background tmux processes or "recreated session after kill-server" behavior.
 	outsideTmux := strings.TrimSpace(os.Getenv("TMUX")) == ""
 	explicitIntent := strings.TrimSpace(flagProjectName) != "" || strings.TrimSpace(flagSpecPath) != ""
 	bootstrapped := strings.TrimSpace(os.Getenv("TMUX_SESSION_MANAGER_BOOTSTRAPPED")) != ""
@@ -157,11 +107,6 @@ func main() {
 			if err == nil && strings.TrimSpace(self) != "" {
 				initSession := "__tsm_init__"
 
-				// Attach (or create) an init session with a *persistent* shell so the tmux server stays alive,
-				// and ask that shell to run tmux-session-manager inside tmux.
-				//
-				// We also pass the init session name so the inner run can auto-kill it once the target
-				// session is ready.
 				innerArgs := append([]string{}, os.Args[1:]...)
 				innerArgs = append(innerArgs, "--bootstrap-init-session", initSession)
 
@@ -170,12 +115,6 @@ func main() {
 					sh = "sh"
 				}
 
-				// Build a command string the init shell will execute.
-				// - export a guard to prevent recursive bootstrapping
-				// - exec into this binary with the original args (+ init session hint)
-				// - then exec the shell again so the pane stays open (user can close it if they want)
-				//
-				// NOTE: This intentionally avoids any /dev/tty or PTY wrappers.
 				cmdStr := "export TMUX_SESSION_MANAGER_BOOTSTRAPPED=1; " + shellQuote(self) + " " + shellJoin(innerArgs) + "; exec " + shellQuote(sh)
 
 				cmdArgs := []string{
@@ -187,10 +126,7 @@ func main() {
 
 				cmd := exec.Command("tmux", cmdArgs...)
 
-				// Preserve environment; the inner invocation will run inside tmux with a valid TMUX context.
 				cmd.Env = os.Environ()
-
-				// Let tmux use the process stdio (works when launched from a real terminal).
 				cmd.Stdin = os.Stdin
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
@@ -202,18 +138,11 @@ func main() {
 				// Fall through to normal behavior if tmux isn't reachable or attach fails.
 			}
 		} else {
-			// By default (no bootstrap), refuse to apply outside tmux to avoid spawning servers/sessions.
-			// Users can opt in with:
-			//   tmux-session-manager --bootstrap --project <name>
-			// or:
-			//   TMUX_SESSION_MANAGER_BOOTSTRAP=1 tmux-session-manager --project <name>
 			fmt.Fprintln(os.Stderr, "tmux-session-manager: not inside tmux. Re-run with --bootstrap (or set TMUX_SESSION_MANAGER_BOOTSTRAP=1).")
 			os.Exit(1)
 		}
 	}
 
-	// Resolve --project <name> into an explicit spec path under roots.
-	// This allows: tmux-session-manager --project vmlab
 	if strings.TrimSpace(flagProjectName) != "" && strings.TrimSpace(flagSpecPath) == "" {
 		project := strings.TrimSpace(flagProjectName)
 
@@ -263,11 +192,7 @@ func main() {
 		}
 	}
 
-	// Explicit spec apply mode: apply a spec file directly (no project discovery).
-	// This path is used by integrations (e.g. tmux-ssh-manager exporting dashboards).
 	if strings.TrimSpace(flagSpecPath) != "" {
-		// Explicit spec apply mode:
-		// Apply the spec file directly without launching the TUI.
 		specPath := expandHome(flagSpecPath)
 
 		specCwd := strings.TrimSpace(flagSpecCwd)
@@ -293,9 +218,6 @@ func main() {
 			shouldSwitchClient = *loadedSpec.Session.SwitchClient
 		}
 
-		// Pre-check/create the session here in code (avoid non-atomic ensure_session).
-		// IMPORTANT: only do this when we're inside tmux. Outside tmux, session creation is
-		// only allowed through the explicit bootstrap path.
 		sessionName := strings.TrimSpace(flagSpecSession)
 		if sessionName == "" {
 			sessionName = filepath.Base(strings.TrimRight(specCwd, string(filepath.Separator)))
@@ -326,8 +248,6 @@ func main() {
 
 		res, err := core.ApplySpecFile(specPath, opt)
 		if err != nil {
-			// If the tmux server is killed while we're applying, subsequent tmux commands will fail
-			// with "no server running ...". This is expected in that scenario; exit cleanly.
 			msg := err.Error()
 			if strings.Contains(msg, "no server running on ") ||
 				strings.Contains(msg, "no server running") ||
@@ -341,7 +261,6 @@ func main() {
 			os.Exit(exitCodeFromErr(err))
 		}
 
-		// Cleanup default window (best-effort, base-index aware; do not kill spec windows)
 		if !flagDryRun {
 			specNames := map[string]struct{}{}
 			for _, w := range loadedSpec.Windows {
@@ -385,11 +304,6 @@ func main() {
 			return
 		}
 
-		// Attach/switch behavior (respect spec booleans) and surface errors.
-		//
-		// This tool is intended to be launched from inside tmux (e.g. via the plugin).
-		// When bootstrapped from outside tmux, we re-exec inside an init session and then
-		// switch to the target session here.
 		if shouldAttach {
 			if strings.TrimSpace(os.Getenv("TMUX")) != "" {
 				if shouldSwitchClient {
@@ -399,19 +313,13 @@ func main() {
 					}
 				}
 
-				// If we were bootstrapped from outside tmux, clean up the init session now that the
-				// target session is ready and (optionally) selected.
 				initSession := strings.TrimSpace(os.Getenv("TMUX_SESSION_MANAGER_INIT_SESSION"))
 				if initSession == "" {
-					// Also accept the CLI-injected hint appended by the bootstrapper.
-					// (This flag is parsed below via the standard flag package.)
-					// If not present, this is a no-op.
 				}
 				if initSession != "" && initSession != sessionName {
 					_ = exec.Command("tmux", "kill-session", "-t", initSession).Run()
 				}
 			} else {
-				// Outside tmux: no-op. Bootstrapping must be explicitly enabled and will re-run inside tmux.
 				return
 			}
 		}

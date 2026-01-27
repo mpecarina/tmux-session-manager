@@ -117,44 +117,15 @@ type Window struct {
 	// FocusPane, when set, requests focusing a specific pane *after* the window's panes are created.
 	//
 	// Supported forms:
-	//   - "active": no-op (leave whatever pane is active at the end of creation)
-	//   - numeric string: pane index (e.g. "1", "2") relative to tmux pane-base-index
-	//
-	// NOTE:
-	// This does not execute raw tmux passthrough; it is a declarative hint for executors.
-	// If your executor cannot deterministically map indices (because pane-base-index is unknown),
-	// it may ignore this field or fall back to focusing the window.
+	// FocusPane is a best-effort hint for which pane should be focused at the end.
+	// Values: "active" or a numeric pane index string (relative to tmux pane-base-index).
 	FocusPane string `json:"focus_pane,omitempty" yaml:"focus_pane,omitempty"`
 
-	// Panes contains panes and their actions/commands.
-	//
-	// If PanePlan is provided (non-empty), executors should prefer PanePlan over Panes
-	// for pane creation because PanePlan encodes split geometry declaratively.
+	// Panes is the legacy/simple pane list. If PanePlan is set, executors should prefer PanePlan.
 	Panes []Pane `json:"panes,omitempty" yaml:"panes,omitempty"`
 
-	// PanePlan is an optional declarative split plan for building panes with geometry.
-	//
-	// Motivation:
-	// - Panes[] alone is insufficient to express deterministic split direction/size (tmuxifier-like layouts).
-	// - PanePlan allows repo-local reproducible layouts without requiring raw tmux passthrough.
-	//
-	// Semantics (MVP, intentionally simple):
-	// - The plan is interpreted left-to-right.
-	// - The first step should be a "pane" step (creates/initializes the first pane).
-	// - Subsequent "split" steps declare how to split from the *currently active pane*.
-	// - A "pane" step following a "split" step describes what to run in the newly created pane.
-	//
-	// Example:
-	//   pane_plan:
-	//     - pane: { name: editor, actions: [ ... ] }
-	//     - split: { direction: h, size: "50%" }
-	//     - pane: { name: shell, actions: [ ... ] }
-	//     - split: { direction: v, size: "30%" }
-	//     - pane: { name: tests, actions: [ ... ] }
-	//
-	// Notes:
-	// - This stays within the safe, declarative interface (no arbitrary tmux commands required).
-	// - For advanced cases, you can still use Spec.Actions with validated tmux passthrough (opt-in).
+	// PanePlan encodes split geometry declaratively: steps are interpreted left-to-right as a
+	// sequence of split + pane steps.
 	PanePlan []PanePlanStep `json:"pane_plan,omitempty" yaml:"pane_plan,omitempty"`
 
 	// Actions optionally provides window-scoped actions (for advanced usage).
@@ -173,12 +144,7 @@ type PanePlanPane struct {
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 	Root string `json:"root,omitempty" yaml:"root,omitempty"`
 
-	// Focus indicates this pane should be focused.
-	//
-	// IMPORTANT:
-	// This is a legacy/compat flag that many executors interpret as "focus the window".
-	// For deterministic post-plan focusing (e.g. focus the first/top pane after creating a dev pane),
-	// prefer Window.FocusPane.
+	// Focus is a legacy hint; prefer Window.FocusPane for deterministic focusing.
 	Focus bool `json:"focus,omitempty" yaml:"focus,omitempty"`
 
 	Actions []Action `json:"actions,omitempty" yaml:"actions,omitempty"`

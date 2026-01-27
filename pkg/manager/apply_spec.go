@@ -12,10 +12,6 @@ import (
 )
 
 // sanitizeSessionNameForApply converts a user-facing name into a tmux-safe session identifier.
-// Keep it consistent with our other sanitizers: lowercase, [_a-z0-9], underscores.
-//
-// NOTE: This is intentionally local to apply_spec.go so ApplySpecFile does not depend
-// on any TUI helpers.
 func sanitizeSessionNameForApply(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.ToLower(s)
@@ -92,12 +88,7 @@ type ApplyResult struct {
 	CompiledArgs int // number of tmux commands in the compiled plan
 }
 
-// ApplySpecFile loads a tmux-session-manager spec from SpecPath, validates it under the provided policy,
-// compiles it into tmux commands, and optionally executes it.
-//
-// This is intended to be used by:
-// - a future CLI flag: `tmux-session-manager --spec /path/to/spec.yaml`
-// - other modules (like tmux-ssh-manager) delegating dashboard materialization to session manager.
+// ApplySpecFile loads, validates, compiles, and optionally executes a spec file.
 func ApplySpecFile(specPath string, opt ApplySpecOptions) (ApplyResult, error) {
 	specPath = strings.TrimSpace(specPath)
 	if specPath == "" {
@@ -147,14 +138,7 @@ func ApplySpecFile(specPath string, opt ApplySpecOptions) (ApplyResult, error) {
 		return ApplyResult{}, fmt.Errorf("spec policy rejected: %w", err)
 	}
 
-	// Derive a default session name if not explicitly provided.
-	//
-	// Precedence:
-	// 1) opt.SessionName (explicit override)
-	// 2) spec.session.name
-	// 3) derived from projectName (sanitized)
-	//
-	// templates.Context requires SessionName to be non-empty.
+	// Session name precedence: opt.SessionName > spec.session.name > sanitized project name.
 	sessionName := strings.TrimSpace(opt.SessionName)
 	if sessionName == "" {
 		sessionName = strings.TrimSpace(s.Session.Name)
@@ -217,5 +201,4 @@ func ApplySpecFile(specPath string, opt ApplySpecOptions) (ApplyResult, error) {
 	return res, nil
 }
 
-// NOTE: expandHome is defined elsewhere in this package (used by the TUI as well).
-// Avoid duplicating it here to prevent redeclaration errors.
+// expandHome is defined elsewhere in this package.

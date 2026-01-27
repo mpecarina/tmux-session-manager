@@ -10,13 +10,7 @@ import (
 	"time"
 )
 
-// Tmux provides a small, consistent wrapper around invoking `tmux`.
-// It centralizes:
-// - env inheritance/overrides
-// - error formatting with stdout/stderr
-// - optional debug logging
-//
-// This is intentionally lightweight; it should be safe to use from TUIs and scripts.
+// Tmux is a small wrapper around invoking `tmux`.
 type Tmux struct {
 	// Path to tmux binary. If empty, defaults to "tmux" (resolved via PATH).
 	Bin string
@@ -49,7 +43,6 @@ func (t *Tmux) IsAvailable() bool {
 
 // InTmux returns true if we appear to be running inside a tmux client.
 func (t *Tmux) InTmux() bool {
-	// NOTE: This is best-effort; some contexts may talk to a tmux server without TMUX set.
 	return os.Getenv("TMUX") != ""
 }
 
@@ -178,14 +171,11 @@ func (t *Tmux) SetOptionGlobal(name string, value string) error {
 	return t.Run("set-option", "-g", name, value)
 }
 
-// HasCommand checks if `tmux <cmd>` is a valid tmux command by running `tmux -q`.
+// HasCommand checks if a tmux subcommand exists.
 func (t *Tmux) HasCommand(cmd string) bool {
 	if strings.TrimSpace(cmd) == "" {
 		return false
 	}
-	// There is no perfect "has command" API; best-effort:
-	// `tmux list-commands` exists; parse is costly. Instead attempt a harmless run.
-	// If cmd is invalid, tmux returns non-zero.
 	_, err := t.Output(cmd, "-h")
 	return err == nil
 }
@@ -227,8 +217,6 @@ func (t *Tmux) runBytes(capture bool, args ...string) ([]byte, []byte, error) {
 	}
 
 	if t.Timeout > 0 {
-		// Minimal timeout support without context package plumbing through all callsites.
-		// If timeout elapses, kill the process and return an error.
 		err := runWithTimeout(cmd, t.Timeout)
 		if err != nil {
 			if capture {
@@ -259,7 +247,6 @@ func (t *Tmux) runBytes(capture bool, args ...string) ([]byte, []byte, error) {
 }
 
 func (t *Tmux) wrapErr(args []string, stdout, stderr []byte, err error) error {
-	// Include both stdout/stderr since tmux frequently prints useful hints on stderr.
 	sout := strings.TrimSpace(string(stdout))
 	serr := strings.TrimSpace(string(stderr))
 
@@ -287,7 +274,6 @@ func durMillisOrDefault(d time.Duration, def int) int {
 }
 
 func shellJoin(args []string) string {
-	// Best-effort for log/error messages; not intended for re-exec as-is.
 	out := make([]string, 0, len(args))
 	for _, a := range args {
 		out = append(out, shellQuoteSimple(a))
@@ -342,7 +328,6 @@ func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) error {
 		return r.err
 	case <-timer.C:
 		_ = cmd.Process.Kill()
-		// Wait for goroutine to finish to avoid zombies.
 		<-ch
 		return fmt.Errorf("tmux command timed out after %s", timeout)
 	}
