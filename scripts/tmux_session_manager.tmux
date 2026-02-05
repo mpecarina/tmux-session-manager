@@ -90,11 +90,31 @@ if [[ -z "${DEBUG_OPT}" ]]; then
   DEBUG_OPT="off"
 fi
 
+DEFAULT_BIN_PATH="${REPO_ROOT}/bin/tmux-session-manager"
 if [[ ! -x "${BIN_PATH}" ]]; then
-  tmux display-message -d 5000 "tmux-session-manager: binary not found or not executable at: ${BIN_PATH}" || true
-  tmux display-message -d 5000 "Build it with: (cd ${REPO_ROOT} && go build -o bin/tmux-session-manager ./cmd/tmux-session-manager)" || true
-  tmux display-message -d 5000 "Or set: set -g @tmux_session_manager_bin '/path/to/tmux-session-manager'" || true
-  exit 1
+  # Only auto-build when using the default (repo-local) binary location.
+  # If the user set @tmux_session_manager_bin, don't build into arbitrary paths.
+  if [[ "${BIN_PATH}" == "${DEFAULT_BIN_PATH}" ]]; then
+    if ! command -v go >/dev/null 2>&1; then
+      tmux display-message -d 7000 "tmux-session-manager: 'go' not found; cannot build ${DEFAULT_BIN_PATH}" || true
+      tmux display-message -d 7000 "Install Go or set: set -g @tmux_session_manager_bin '/path/to/tmux-session-manager'" || true
+      exit 1
+    fi
+
+    mkdir -p "${REPO_ROOT}/bin" 2>/dev/null || true
+    tmux display-message -d 2000 "tmux-session-manager: building Go binary..." || true
+    if ! (cd "${REPO_ROOT}" && go build -o "bin/tmux-session-manager" "./cmd/tmux-session-manager"); then
+      tmux display-message -d 8000 "tmux-session-manager: build failed. Try: (cd ${REPO_ROOT} && go build -o bin/tmux-session-manager ./cmd/tmux-session-manager)" || true
+      exit 1
+    fi
+  fi
+
+  if [[ ! -x "${BIN_PATH}" ]]; then
+    tmux display-message -d 5000 "tmux-session-manager: binary not found or not executable at: ${BIN_PATH}" || true
+    tmux display-message -d 5000 "Build it with: (cd ${REPO_ROOT} && go build -o bin/tmux-session-manager ./cmd/tmux-session-manager)" || true
+    tmux display-message -d 5000 "Or set: set -g @tmux_session_manager_bin '/path/to/tmux-session-manager'" || true
+    exit 1
+  fi
 fi
 
 CMD_STR="exec \"${BIN_PATH}\""
